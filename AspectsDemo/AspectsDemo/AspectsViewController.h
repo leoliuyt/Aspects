@@ -12,4 +12,5 @@
 
 - (IBAction)buttonPressed:(id)sender;
 
++ (void)classFunc;
 @end

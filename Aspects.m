@@ -240,6 +240,7 @@ static BOOL aspect_isMsgForwardIMP(IMP impl) {
     ;
 }
 
+//将方法的实现替换成改IMP 会调用转发流程
 static IMP aspect_getMsgForwardIMP(NSObject *self, SEL selector) {
     IMP msgForwardIMP = _objc_msgForward;
 #if !defined(__arm64__)
@@ -276,7 +277,7 @@ static void aspect_prepareClassAndHookSelector(NSObject *self, SEL selector, NSE
         // Make a method alias for the existing method implementation, it not already copied.
         const char *typeEncoding = method_getTypeEncoding(targetMethod);
         SEL aliasSelector = aspect_aliasForSelector(selector);
-        if (![klass instancesRespondToSelector:aliasSelector]) {
+        if (![klass instancesRespondToSelector:aliasSelector]) {//
             __unused BOOL addedAlias = class_addMethod(klass, aliasSelector, method_getImplementation(targetMethod), typeEncoding);
             NSCAssert(addedAlias, @"Original implementation for %@ is already copied to %@ on %@", NSStringFromSelector(selector), NSStringFromSelector(aliasSelector), klass);
         }
@@ -346,7 +347,7 @@ static void aspect_cleanupHookedClassAndSelector(NSObject *self, SEL selector) {
 
 ///////////////////////////////////////////////////////////////////////////////////////////
 #pragma mark - Hook Class
-
+//创建了一个与self 对应的新类 hook了forward方法添加了自己的实现
 static Class aspect_hookClass(NSObject *self, NSError **error) {
     NSCParameterAssert(self);
 	Class statedClass = self.class;
@@ -370,15 +371,16 @@ static Class aspect_hookClass(NSObject *self, NSError **error) {
 	Class subclass = objc_getClass(subclassName);
 
 	if (subclass == nil) {
+        //创建继承baseClass的subClassName
 		subclass = objc_allocateClassPair(baseClass, subclassName, 0);
 		if (subclass == nil) {
             NSString *errrorDesc = [NSString stringWithFormat:@"objc_allocateClassPair failed to allocate class %s.", subclassName];
             AspectError(AspectErrorFailedToAllocateClassPair, errrorDesc);
             return nil;
         }
-
+        
 		aspect_swizzleForwardInvocation(subclass);
-		aspect_hookedGetClass(subclass, statedClass);
+		aspect_hookedGetClass(subclass, statedClass); //让self.class 返回原来的类型
 		aspect_hookedGetClass(object_getClass(subclass), statedClass);
 		objc_registerClassPair(subclass);
 	}
@@ -388,11 +390,13 @@ static Class aspect_hookClass(NSObject *self, NSError **error) {
 }
 
 static NSString *const AspectsForwardInvocationSelectorName = @"__aspects_forwardInvocation:";
-static void aspect_swizzleForwardInvocation(Class klass) {
+static void aspect_swizzleForwardInvocation(Class klass) {//如果当前类实现了forwardInvocation 那么使用当前类实现的，如果没有实现，就调用__ASPECTS_ARE_BEING_CALLED__中的实现方式
+    
     NSCParameterAssert(klass);
     // If there is no method, replace will act like class_addMethod.
+    //class_replaceMethod 返回没有替代之前的 IMP
     IMP originalImplementation = class_replaceMethod(klass, @selector(forwardInvocation:), (IMP)__ASPECTS_ARE_BEING_CALLED__, "v@:@");
-    if (originalImplementation) {
+    if (originalImplementation) { //如果之前的类 实现了forwardInvocation：那么就使用之前的实现 否则使用__ASPECTS_ARE_BEING_CALLED__
         class_addMethod(klass, NSSelectorFromString(AspectsForwardInvocationSelectorName), originalImplementation, "v@:@");
     }
     AspectLog(@"Aspects: %@ is now aspect aware.", NSStringFromClass(klass));
@@ -409,6 +413,7 @@ static void aspect_undoSwizzleForwardInvocation(Class klass) {
     AspectLog(@"Aspects: %@ has been restored.", NSStringFromClass(klass));
 }
 
+//hook class 方法
 static void aspect_hookedGetClass(Class class, Class statedClass) {
     NSCParameterAssert(class);
     NSCParameterAssert(statedClass);
@@ -565,6 +570,7 @@ static NSMutableDictionary *aspect_getSwizzledClassesDict() {
     return swizzledClassesDict;
 }
 
+//判断是否在类中已经存在的方法（包括类方法）
 static BOOL aspect_isSelectorAllowedAndTrack(NSObject *self, SEL selector, AspectOptions options, NSError **error) {
     static NSSet *disallowedSelectorList;
     static dispatch_once_t pred;
@@ -595,13 +601,13 @@ static BOOL aspect_isSelectorAllowedAndTrack(NSObject *self, SEL selector, Aspec
     }
 
     // Search for the current class and the class hierarchy IF we are modifying a class object
-    if (class_isMetaClass(object_getClass(self))) {
+    if (class_isMetaClass(object_getClass(self))) {//类方法调用方式 会走
         Class klass = [self class];
         NSMutableDictionary *swizzledClassesDict = aspect_getSwizzledClassesDict();
         Class currentClass = [self class];
 
         AspectTracker *tracker = swizzledClassesDict[currentClass];
-        if ([tracker subclassHasHookedSelectorName:selectorName]) {
+        if ([tracker subclassHasHookedSelectorName:selectorName]) {//类方法 子类已经hook过的不要在hook
             NSSet *subclassTracker = [tracker subclassTrackersHookingSelectorName:selectorName];
             NSSet *subclassNames = [subclassTracker valueForKey:@"trackedClassName"];
             NSString *errorDescription = [NSString stringWithFormat:@"Error: %@ already hooked subclasses: %@. A method can only be hooked once per class hierarchy.", selectorName, subclassNames];
